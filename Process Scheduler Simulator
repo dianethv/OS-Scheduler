@@ -1,0 +1,248 @@
+#include <iostream>
+#include <queue>
+#include <vector>
+#include <list>
+#include <string>
+
+using namespace std;
+
+struct Operation {
+    string action;
+    int value;
+};
+
+struct Slot {
+    int PID;
+    int state; // 1: READY, 2: RUNNING, 3: BLOCKED, 4: TERMINATED
+    int startTime;
+    int cpuTimeUsed;
+    int ssdAccesses;
+    int userInteractions;
+
+    Slot() : PID(-1), state(1), startTime(0), cpuTimeUsed(0), ssdAccesses(0), userInteractions(0) {}
+
+    Slot(int pid, int state, int startTime)
+        : PID(pid), state(state), startTime(startTime), cpuTimeUsed(0), ssdAccesses(0), userInteractions(0) {}
+};
+
+struct Process {
+    int PID;
+    int TIME;
+    string PROC;
+    int startTime;
+
+    Process(int pid, int time = 0, const string& proc = "")
+        : PID(pid), TIME(time), PROC(proc), startTime(time) {}
+
+    bool operator<(const Process& other) const {
+        return TIME > other.TIME;
+    }
+};
+
+vector<list<Operation>> InputTable;
+vector<Slot> ProcessTable;
+priority_queue<Process> MainQ;
+queue<Process> CPUHQ, CPULQ, SSDQ;
+int CPUsFree;
+bool SSDEmpty = true;
+int SYSTime = 0;
+
+void ArrivalFunction(Process& process);
+void CPUComp(Process& process);
+void SSDComp(Process& process);
+void UserInteract(Process& process);
+void SSDReq(Process& process);
+void SchedToCPU(Process& process);
+void OutputProcessTable();
+void OutputProcessTermination(int pid);
+void ChangeProcessState(int pid, int state);
+
+int main() {
+    string line;
+    int VAL;
+    cin >> line >> VAL;
+    CPUsFree = VAL;
+
+    while (cin >> line && line != "END") {
+        cin >> VAL;
+        Operation op { line, VAL };
+        if (line == "NEW") {
+            int pid = static_cast<int>(ProcessTable.size());
+            ProcessTable.emplace_back(pid, 1, SYSTime);
+            InputTable.emplace_back(list<Operation>());
+            InputTable.back().push_back(op);
+        } else {
+            InputTable.back().push_back(op);
+        }
+    }
+
+    for (int i = 0; i < static_cast<int>(ProcessTable.size()); ++i) {
+        MainQ.emplace(i, InputTable[i].front().value, "NEW");
+    }
+
+    while (!MainQ.empty()) {
+        Process process = MainQ.top();
+        MainQ.pop();
+        SYSTime = process.TIME;
+
+        string OPERATION = InputTable[process.PID].front().action;
+        process.PROC = OPERATION;
+
+        if (OPERATION == "NEW") {
+            ArrivalFunction(process);
+        } else if (OPERATION == "CPU") {
+            CPUComp(process);
+        } else if (OPERATION == "SSD") {
+            SSDComp(process);
+        } else if (OPERATION == "USER") {
+            UserInteract(process);
+        }
+    }
+
+    return 0;
+}
+
+void ArrivalFunction(Process& process) {
+    InputTable[process.PID].pop_front();
+    SchedToCPU(process);
+}
+
+void CPUComp(Process& process) {
+    int cpuTimeRequest = InputTable[process.PID].front().value;
+    SYSTime += cpuTimeRequest;
+    ProcessTable[process.PID].cpuTimeUsed += cpuTimeRequest;
+    CPUsFree += 1;
+
+    InputTable[process.PID].pop_front();
+
+    if (InputTable[process.PID].empty()) {
+        ChangeProcessState(process.PID, 4); // TERMINATED
+        OutputProcessTermination(process.PID);
+        OutputProcessTable(); // Only print table after termination
+    } else {
+        process.PROC = InputTable[process.PID].front().action;
+        if (process.PROC == "SSD") {
+            SSDReq(process);
+        } else {
+            process.TIME = SYSTime;
+            MainQ.push(process);
+        }
+    }
+
+    if (!CPUHQ.empty()) {
+        Process nextProcess = CPUHQ.front();
+        CPUHQ.pop();
+        SchedToCPU(nextProcess);
+    } else if (!CPULQ.empty()) {
+        Process nextProcess = CPULQ.front();
+        CPULQ.pop();
+        SchedToCPU(nextProcess);
+    }
+}
+
+void SSDComp(Process& process) {
+    int ssdTime = InputTable[process.PID].front().value;
+    SYSTime += ssdTime;
+    ProcessTable[process.PID].ssdAccesses++;
+
+    InputTable[process.PID].pop_front();
+    ChangeProcessState(process.PID, 1); // READY
+
+    if (InputTable[process.PID].empty()) {
+        ChangeProcessState(process.PID, 4); // TERMINATED
+        OutputProcessTermination(process.PID);
+        OutputProcessTable(); // Only print table after termination
+    } else {
+        process.PROC = InputTable[process.PID].front().action;
+        process.TIME = SYSTime;
+        MainQ.push(process);
+    }
+
+    if (!SSDQ.empty()) {
+        Process nextProcess = SSDQ.front();
+        SSDQ.pop();
+        ChangeProcessState(nextProcess.PID, 3); // BLOCKED
+        nextProcess.PROC = "SSD";
+        nextProcess.TIME = SYSTime + ssdTime;
+        MainQ.push(nextProcess);
+    } else {
+        SSDEmpty = true;
+    }
+}
+
+void UserInteract(Process& process) {
+    int userTime = InputTable[process.PID].front().value;
+    SYSTime += userTime;
+    ProcessTable[process.PID].userInteractions++;
+    ChangeProcessState(process.PID, 1); // READY
+
+    InputTable[process.PID].pop_front();
+    if (InputTable[process.PID].empty()) {
+        ChangeProcessState(process.PID, 4); // TERMINATED
+        OutputProcessTermination(process.PID);
+        OutputProcessTable(); // Only print table after termination
+    } else {
+        process.TIME = SYSTime;
+        MainQ.push(process);
+    }
+}
+
+void SSDReq(Process& process) {
+    ChangeProcessState(process.PID, 3); // BLOCKED
+    if (SSDEmpty) {
+        SSDEmpty = false;
+        process.PROC = "SSD";
+        process.TIME = SYSTime + InputTable[process.PID].front().value;
+        MainQ.push(process);
+    } else {
+        SSDQ.push(process);
+    }
+}
+
+void SchedToCPU(Process& process) {
+    if (CPUsFree > 0) {
+        ChangeProcessState(process.PID, 2); // RUNNING
+        process.TIME = SYSTime + InputTable[process.PID].front().value;
+        MainQ.push(process);
+        CPUsFree -= 1;
+    } else {
+        CPUHQ.push(process);  // Or CPULQ, depending on priority
+    }
+}
+
+void ChangeProcessState(int pid, int state) {
+    ProcessTable[pid].state = state;
+}
+
+void OutputProcessTable() {
+    cout << "\nPROCESS TABLE:" << endl;
+    for (const auto& slot : ProcessTable) {
+        cout << "Process " << slot.PID << " is ";
+        switch (slot.state) {
+            case 1:
+                cout << "READY";
+                break;
+            case 2:
+                cout << "RUNNING";
+                break;
+            case 3:
+                cout << "BLOCKED";
+                break;
+            case 4:
+                cout << "TERMINATED";
+                break;
+            default:
+                cout << "UNKNOWN";
+        }
+        cout << endl;
+    }
+    cout << endl;
+}
+
+void OutputProcessTermination(int pid) {
+    cout << "\nProcess " << pid << " terminated at time t = " << SYSTime << "ms" << endl;
+    cout << "It started at t = " << ProcessTable[pid].startTime << "ms" << endl;
+    cout << "It used " << ProcessTable[pid].cpuTimeUsed << "ms of CPU time, performed " 
+         << ProcessTable[pid].ssdAccesses << " SSD access(es), and interacted " 
+         << ProcessTable[pid].userInteractions << " time(s) with its user." << endl;
+}
